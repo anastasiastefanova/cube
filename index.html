@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Прозрачный 3D-куб</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(circle at 50% 30%,#1b2735 0%,#090a0f 100%);font-family:system-ui,sans-serif;}
+  #ui{position:fixed;left:16px;top:16px;color:#cfe3ff;font-size:13px;line-height:1.5;background:rgba(10,15,25,.45);padding:12px 14px;border-radius:10px;backdrop-filter:blur(6px);user-select:none;}
+  #ui b{color:#fff;}
+  .row{margin-top:8px;display:flex;align-items:center;gap:8px;}
+  label{font-size:12px;color:#9fb6d4;}
+  input[type=range]{width:120px;}
+  button{background:#2a3f5f;color:#dce9ff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;}
+  button:hover{background:#37567f;}
+</style>
+</head>
+<body>
+<div id="ui">
+  <b>Прозрачный куб</b><br>
+  Тяни мышкой — вращать · колесо — зум
+  <div class="row"><label>Прозрачность</label><input id="opacity" type="range" min="0" max="1" step="0.01" value="0.85"></div>
+  <div class="row"><label>Цвет стекла</label><input id="tint" type="range" min="0" max="360" step="1" value="205"></div>
+  <div class="row"><button id="spin">Авто-вращение: вкл</button></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 100);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.appendChild(renderer.domElement);
+
+// --- простое управление мышкой (без внешних зависимостей) ---
+let rotX=0.5, rotY=0.7, dist=6.5, dragging=false, px=0, py=0;
+const el=renderer.domElement;
+el.addEventListener('mousedown',e=>{dragging=true;px=e.clientX;py=e.clientY;autoSpin=false;});
+addEventListener('mouseup',()=>dragging=false);
+addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  rotY+=(e.clientX-px)*0.01; rotX+=(e.clientY-py)*0.01;
+  rotX=Math.max(-1.5,Math.min(1.5,rotX));
+  px=e.clientX; py=e.clientY;
+});
+el.addEventListener('wheel',e=>{e.preventDefault();dist=Math.max(3,Math.min(15,dist+e.deltaY*0.01));},{passive:false});
+// touch
+el.addEventListener('touchstart',e=>{dragging=true;px=e.touches[0].clientX;py=e.touches[0].clientY;autoSpin=false;});
+addEventListener('touchend',()=>dragging=false);
+el.addEventListener('touchmove',e=>{
+  if(!dragging)return;
+  rotY+=(e.touches[0].clientX-px)*0.01; rotX+=(e.touches[0].clientY-py)*0.01;
+  rotX=Math.max(-1.5,Math.min(1.5,rotX));
+  px=e.touches[0].clientX; py=e.touches[0].clientY;
+},{passive:true});
+
+// свет
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.0); key.position.set(5,6,4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88bbff, 0.6); rim.position.set(-4,-2,-5); scene.add(rim);
+const pt = new THREE.PointLight(0xffd9a0, 0.7); pt.position.set(-3,3,3); scene.add(pt);
+
+const cube = new THREE.Group();
+scene.add(cube);
+
+// --- прозрачное стекло ---
+const glassMat = new THREE.MeshPhongMaterial({
+  color: 0x66aaff, transparent:true, opacity:0.85,
+  shininess:120, specular:0xffffff, side:THREE.DoubleSide,
+  depthWrite:false
+});
+const box = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), glassMat);
+cube.add(box);
+
+// --- подсвеченные рёбра ---
+const edges = new THREE.LineSegments(
+  new THREE.EdgesGeometry(box.geometry),
+  new THREE.LineBasicMaterial({color:0x8fd3ff})
+);
+cube.add(edges);
+
+// --- шарики на вершинах ---
+const vGeo = new THREE.SphereGeometry(0.06,16,16);
+const vMat = new THREE.MeshPhongMaterial({color:0xffe08a, emissive:0x553300});
+[-1,1].forEach(x=>[-1,1].forEach(y=>[-1,1].forEach(z=>{
+  const s=new THREE.Mesh(vGeo,vMat); s.position.set(x,y,z); cube.add(s);
+})));
+
+// --- 4 диагонали из противоположных углов (объёмные трубки) ---
+const diagMat = new THREE.MeshPhongMaterial({
+  color:0xff3b30, emissive:0xff2a20, emissiveIntensity:0.6, shininess:120
+});
+const diagPairs = [
+  [[-1,-1,-1],[ 1, 1, 1]],
+  [[-1,-1, 1],[ 1, 1,-1]],
+  [[-1, 1,-1],[ 1,-1, 1]],
+  [[ 1,-1,-1],[-1, 1, 1]]
+];
+const diagLen = Math.sqrt(12); // длина диагонали куба со стороной 2
+diagPairs.forEach(([a,b])=>{
+  const va=new THREE.Vector3(...a), vb=new THREE.Vector3(...b);
+  const tube=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045,0.045,diagLen,16),
+    diagMat
+  );
+  tube.position.copy(va).add(vb).multiplyScalar(0.5);
+  tube.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0,1,0),
+    vb.clone().sub(va).normalize()
+  );
+  cube.add(tube);
+});
+// яркая точка в центре пересечения
+cube.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.09,20,20),
+  new THREE.MeshPhongMaterial({color:0xffffff,emissive:0xffaa55,emissiveIntensity:0.8})
+));
+
+// --- надписи на гранях (canvas-текстуры) ---
+function labelTexture(title, sub, color){
+  const c=document.createElement('canvas'); c.width=c.height=256;
+  const g=c.getContext('2d');
+  g.clearRect(0,0,256,256);
+  g.fillStyle=color; g.font='bold 120px system-ui,sans-serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText(title,128,110);
+  g.font='500 34px system-ui,sans-serif'; g.fillStyle='rgba(255,255,255,.85)';
+  g.fillText(sub,128,190);
+  const t=new THREE.CanvasTexture(c); t.anisotropy=8; return t;
+}
+const faces=[
+  {t:'1',s:'ПЕРЁД',  c:'#ff6b6b', pos:[0,0,1.02],  rot:[0,0,0]},
+  {t:'2',s:'ЗАД',    c:'#4dd4a8', pos:[0,0,-1.02], rot:[0,Math.PI,0]},
+  {t:'3',s:'ПРАВО',  c:'#ffd166', pos:[1.02,0,0],  rot:[0,Math.PI/2,0]},
+  {t:'4',s:'ЛЕВО',   c:'#6bb6ff', pos:[-1.02,0,0], rot:[0,-Math.PI/2,0]},
+  {t:'5',s:'ВЕРХ',   c:'#c792ea', pos:[0,1.02,0],  rot:[-Math.PI/2,0,0]},
+  {t:'6',s:'НИЗ',    c:'#f78fb3', pos:[0,-1.02,0], rot:[Math.PI/2,0,0]},
+];
+faces.forEach(f=>{
+  const m=new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6,1.6),
+    new THREE.MeshBasicMaterial({map:labelTexture(f.t,f.s,f.c),transparent:true,depthWrite:false})
+  );
+  m.position.set(...f.pos); m.rotation.set(...f.rot);
+  cube.add(m);
+});
+
+// --- контролы UI ---
+let autoSpin=true;
+document.getElementById('opacity').oninput=e=>glassMat.opacity=+e.target.value;
+document.getElementById('tint').oninput=e=>{
+  const h=+e.target.value/360;
+  glassMat.color.setHSL(h,0.7,0.6);
+};
+document.getElementById('spin').onclick=e=>{
+  autoSpin=!autoSpin;
+  e.target.textContent='Авто-вращение: '+(autoSpin?'вкл':'выкл');
+};
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+(function loop(){
+  requestAnimationFrame(loop);
+  if(autoSpin){ rotY+=0.005; }
+  camera.position.x = dist*Math.sin(rotY)*Math.cos(rotX);
+  camera.position.y = dist*Math.sin(rotX);
+  camera.position.z = dist*Math.cos(rotY)*Math.cos(rotX);
+  camera.lookAt(0,0,0);
+  renderer.render(scene,camera);
+})();
+</script>
+</body>
+</html>
