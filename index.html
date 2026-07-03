@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Прозрачный 3D-куб</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:radial-gradient(circle at 50% 30%,#1b2735 0%,#090a0f 100%);font-family:system-ui,sans-serif;}
+  #ui{position:fixed;left:16px;top:16px;color:#cfe3ff;font-size:13px;line-height:1.5;background:rgba(10,15,25,.5);padding:12px 14px;border-radius:10px;backdrop-filter:blur(6px);user-select:none;max-width:260px;}
+  #ui b{color:#fff;}
+  .hint{color:#9fb6d4;font-size:12px;margin-top:6px;}
+  .row{margin-top:8px;display:flex;align-items:center;gap:8px;}
+  label{font-size:12px;color:#9fb6d4;}
+  input[type=range]{width:120px;}
+  button{background:#2a3f5f;color:#dce9ff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;}
+  button:hover{background:#37567f;}
+</style>
+</head>
+<body>
+<div id="ui">
+  <b>Прозрачный куб</b>
+  <div class="hint">Тяни мышкой — вращать · колесо — зум<br>
+  Клик по метке (буква или «+») — подписать вершину, ребро или грань.</div>
+  <div class="row"><label>Прозрачность</label><input id="opacity" type="range" min="0" max="1" step="0.01" value="0.85"></div>
+  <div class="row"><label>Цвет стекла</label><input id="tint" type="range" min="0" max="360" step="1" value="205"></div>
+  <div class="row"><button id="spin">Авто-вращение: вкл</button></div>
+  <div class="row"><button id="share">Скопировать ссылку с подписями</button></div>
+  <div class="row"><button id="reset">Очистить все подписи</button></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 100);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.appendChild(renderer.domElement);
+const el = renderer.domElement;
+
+// --- свет ---
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.0); key.position.set(5,6,4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88bbff, 0.6); rim.position.set(-4,-2,-5); scene.add(rim);
+const pt  = new THREE.PointLight(0xffd9a0, 0.7); pt.position.set(-3,3,3); scene.add(pt);
+
+// --- управление мышкой ---
+let rotX=0.5, rotY=0.7, dist=6.5, dragging=false, px=0, py=0, autoSpin=true;
+let downX=0, downY=0, moved=false;
+el.addEventListener('mousedown',e=>{dragging=true;px=downX=e.clientX;py=downY=e.clientY;moved=false;});
+addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  if(Math.abs(e.clientX-downX)>4||Math.abs(e.clientY-downY)>4){moved=true;autoSpin=false;}
+  rotY+=(e.clientX-px)*0.01; rotX+=(e.clientY-py)*0.01;
+  rotX=Math.max(-1.5,Math.min(1.5,rotX));
+  px=e.clientX; py=e.clientY;
+});
+addEventListener('mouseup',e=>{
+  dragging=false;
+  if(!moved) pick(e.clientX,e.clientY); // это был клик, а не вращение
+});
+el.addEventListener('wheel',e=>{e.preventDefault();dist=Math.max(3,Math.min(15,dist+e.deltaY*0.01));},{passive:false});
+el.addEventListener('touchstart',e=>{dragging=true;px=downX=e.touches[0].clientX;py=downY=e.touches[0].clientY;moved=false;});
+addEventListener('touchend',e=>{dragging=false; if(!moved&&e.changedTouches[0]) pick(e.changedTouches[0].clientX,e.changedTouches[0].clientY);});
+el.addEventListener('touchmove',e=>{
+  if(!dragging)return;
+  const t=e.touches[0];
+  if(Math.abs(t.clientX-downX)>4||Math.abs(t.clientY-downY)>4){moved=true;autoSpin=false;}
+  rotY+=(t.clientX-px)*0.01; rotX+=(t.clientY-py)*0.01;
+  rotX=Math.max(-1.5,Math.min(1.5,rotX));
+  px=t.clientX; py=t.clientY;
+},{passive:true});
+
+const cube = new THREE.Group();
+scene.add(cube);
+
+// --- прозрачное стекло ---
+const glassMat = new THREE.MeshPhongMaterial({
+  color:0x66aaff, transparent:true, opacity:0.85,
+  shininess:120, specular:0xffffff, side:THREE.DoubleSide, depthWrite:false
+});
+const box = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), glassMat);
+cube.add(box);
+
+// --- подсвеченные рёбра ---
+cube.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(box.geometry),
+  new THREE.LineBasicMaterial({color:0x8fd3ff})
+));
+
+// --- диагонали (объёмные трубки) ---
+const diagMat = new THREE.MeshPhongMaterial({color:0xff3b30, emissive:0xff2a20, emissiveIntensity:0.6, shininess:120});
+const diagPairs = [[[-1,-1,-1],[1,1,1]],[[-1,-1,1],[1,1,-1]],[[-1,1,-1],[1,-1,1]],[[1,-1,-1],[-1,1,1]]];
+const diagLen = Math.sqrt(12);
+diagPairs.forEach(([a,b])=>{
+  const va=new THREE.Vector3(...a), vb=new THREE.Vector3(...b);
+  const tube=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,diagLen,16), diagMat);
+  tube.position.copy(va).add(vb).multiplyScalar(0.5);
+  tube.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), vb.clone().sub(va).normalize());
+  cube.add(tube);
+});
+cube.add(new THREE.Mesh(new THREE.SphereGeometry(0.09,20,20),
+  new THREE.MeshPhongMaterial({color:0xffffff,emissive:0xffaa55,emissiveIntensity:0.8})));
+
+// ===== РЕДАКТИРУЕМЫЕ ПОДПИСИ (клик мышкой) =====
+const editable = [];
+const labelsById = {};
+function roundRect(g,x,y,w,h,r){g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath();}
+
+// --- сохранённое состояние: сначала из ссылки (#...), иначе из localStorage ---
+const STORE_KEY='cube-labels-v1';
+function loadState(){
+  try{
+    if(location.hash.length>1){
+      const s=JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
+      if(s&&typeof s==='object') return s;
+    }
+  }catch(e){}
+  try{ return JSON.parse(localStorage.getItem(STORE_KEY))||{}; }catch(e){ return {}; }
+}
+let STATE = loadState();
+function saveState(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(STATE)); }catch(e){}
+}
+
+function makeLabel(initial, color, scale, id){
+  const canvas=document.createElement('canvas'); canvas.width=canvas.height=256;
+  const ctx=canvas.getContext('2d');
+  const tex=new THREE.CanvasTexture(canvas); tex.anisotropy=8;
+  const mat=new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false});
+  const sp=new THREE.Sprite(mat); sp.scale.set(scale,scale,scale);
+  if(id in STATE) initial = STATE[id]; // восстановить сохранённую подпись
+  function draw(text){
+    ctx.clearRect(0,0,256,256);
+    if(text){
+      ctx.fillStyle='rgba(8,14,24,0.72)';
+      const w=Math.min(232, 60+text.length*46);
+      roundRect(ctx,128-w/2,86,w,84,20); ctx.fill();
+      ctx.strokeStyle=color; ctx.lineWidth=5; ctx.stroke();
+      ctx.fillStyle=color; ctx.font='bold 76px system-ui,sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(text,128,128);
+    }else{
+      ctx.fillStyle='rgba(255,255,255,0.28)';
+      ctx.font='bold 64px system-ui,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('+',128,128);
+    }
+    tex.needsUpdate=true;
+  }
+  draw(initial);
+  sp.userData={id, text:initial||'', set(t){this.text=t; draw(t); STATE[id]=t; saveState();}};
+  editable.push(sp);
+  labelsById[id]=sp;
+  return sp;
+}
+
+// --- 8 вершин: буквы A–H + шарик ---
+const verts=[
+  {p:[-1,-1,-1],l:'A'},{p:[ 1,-1,-1],l:'B'},{p:[ 1, 1,-1],l:'C'},{p:[-1, 1,-1],l:'D'},
+  {p:[-1,-1, 1],l:'E'},{p:[ 1,-1, 1],l:'F'},{p:[ 1, 1, 1],l:'G'},{p:[-1, 1, 1],l:'H'}
+];
+const vGeo=new THREE.SphereGeometry(0.06,16,16);
+const vMat=new THREE.MeshPhongMaterial({color:0xffe08a, emissive:0x553300});
+verts.forEach((v,i)=>{
+  const s=new THREE.Mesh(vGeo,vMat); s.position.set(...v.p); cube.add(s);
+  const lab=makeLabel(v.l, '#ffe08a', 0.42, 'v'+i);
+  lab.position.set(v.p[0]*1.18, v.p[1]*1.18, v.p[2]*1.18);
+  cube.add(lab);
+});
+
+// --- 6 граней: пустые метки под подпись ---
+const faceDefs=[
+  {c:[0,0,1],col:'#4dd4a8'},{c:[0,0,-1],col:'#4dd4a8'},
+  {c:[1,0,0],col:'#ffd166'},{c:[-1,0,0],col:'#ffd166'},
+  {c:[0,1,0],col:'#c792ea'},{c:[0,-1,0],col:'#c792ea'}
+];
+faceDefs.forEach((f,i)=>{
+  const lab=makeLabel('', f.col, 0.55, 'f'+i);
+  lab.position.set(f.c[0]*1.02, f.c[1]*1.02, f.c[2]*1.02);
+  cube.add(lab);
+});
+
+// --- 12 рёбер: пустые метки под подпись ---
+const EDG=[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+EDG.forEach(([a,b],i)=>{
+  const pa=new THREE.Vector3(...verts[a].p), pb=new THREE.Vector3(...verts[b].p);
+  const mid=pa.clone().add(pb).multiplyScalar(0.5).multiplyScalar(1.1);
+  const lab=makeLabel('', '#8fd3ff', 0.4, 'e'+i);
+  lab.position.copy(mid);
+  cube.add(lab);
+});
+
+// --- пикинг по метке ---
+const raycaster=new THREE.Raycaster();
+const mouse=new THREE.Vector2();
+function pick(clientX,clientY){
+  const r=el.getBoundingClientRect();
+  mouse.x=((clientX-r.left)/r.width)*2-1;
+  mouse.y=-((clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(mouse,camera);
+  const hits=raycaster.intersectObjects(editable,false);
+  if(hits.length){
+    const sp=hits[0].object;
+    const v=prompt('Подпись (пусто — очистить):', sp.userData.text||'');
+    if(v!==null) sp.userData.set(v.trim());
+  }
+}
+
+// --- UI ---
+document.getElementById('opacity').oninput=e=>glassMat.opacity=+e.target.value;
+document.getElementById('tint').oninput=e=>glassMat.color.setHSL(+e.target.value/360,0.7,0.6);
+document.getElementById('spin').onclick=e=>{autoSpin=!autoSpin; e.target.textContent='Авто-вращение: '+(autoSpin?'вкл':'выкл');};
+
+// ссылка со всеми текущими подписями (кодируется в #хвост URL)
+document.getElementById('share').onclick=e=>{
+  const snap={};
+  for(const id in labelsById){ snap[id]=labelsById[id].userData.text||''; }
+  const hash=btoa(unescape(encodeURIComponent(JSON.stringify(snap))));
+  const url=location.origin+location.pathname+'#'+hash;
+  const done=()=>{e.target.textContent='Ссылка скопирована ✓'; setTimeout(()=>e.target.textContent='Скопировать ссылку с подписями',1800);};
+  if(navigator.clipboard){navigator.clipboard.writeText(url).then(done,()=>prompt('Скопируй ссылку:',url));}
+  else prompt('Скопируй ссылку:',url);
+};
+
+// очистить все подписи
+document.getElementById('reset').onclick=()=>{
+  if(!confirm('Очистить все подписи?'))return;
+  try{localStorage.removeItem(STORE_KEY);}catch(e){}
+  location.hash=''; location.reload();
+};
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+(function loop(){
+  requestAnimationFrame(loop);
+  if(autoSpin){ rotY+=0.005; }
+  camera.position.x = dist*Math.sin(rotY)*Math.cos(rotX);
+  camera.position.y = dist*Math.sin(rotX);
+  camera.position.z = dist*Math.cos(rotY)*Math.cos(rotX);
+  camera.lookAt(0,0,0);
+  renderer.render(scene,camera);
+})();
+</script>
+</body>
+</html>
